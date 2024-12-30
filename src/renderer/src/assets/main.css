@@ -1,0 +1,9 @@
+@import './base.css';
+
+body {
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 0;
+  margin: 0;
+  font-size: 12px;
+}
