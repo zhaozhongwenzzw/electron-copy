@@ -5,51 +5,85 @@ import { clipboardManager } from './ClipboardManager'
 import { configManager } from './ConfigManager'
 import { getTrayManager } from './TrayManager'
 
-// 添加内存管理
-function setupMemoryManagement(): void {
-  // 定期进行垃圾回收
-  const gcInterval = setInterval(() => {
-    if (global.gc) {
-      global.gc()
+// 统一的资源清理函数
+function cleanup(): void {
+  // 销毁所有窗口
+  BrowserWindow.getAllWindows().forEach(window => {
+    if (!window.isDestroyed()) {
+      window.destroy()
     }
-  }, 300000) // 5分钟执行一次
-
-  // 清理定时器
-  app.on('before-quit', () => {
-    clearInterval(gcInterval)
   })
+
+  // 清理各个管理器
+  searchWindowManager.destroy()
+  clipboardManager.stop()
+  getTrayManager().destroy()
+  globalShortcut.unregisterAll()
 }
 
 app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.electron')
+  // 设置应用 ID
+  electronApp.setAppUserModelId('com.clipboard.history')
+
+  // 优化窗口快捷键
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  searchWindowManager.createSearchWindow()
-  clipboardManager
-  getTrayManager()
+  try {
+    // 按顺序初始化各个管理器
+    clipboardManager.start() // 先启动剪贴板监听
+    searchWindowManager.createSearchWindow() // 创建主窗口
+    getTrayManager() // 创建托盘
+  } catch (error) {
+    console.error('Failed to initialize:', error)
+    app.quit()
+  }
+
+  // 窗口控制事件处理
   ipcMain.on('window-minimize', event => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) {
-      win.minimize()
+    try {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (win && !win.isDestroyed()) {
+        win.minimize()
+      }
+    } catch (error) {
+      console.error('Failed to minimize window:', error)
     }
   })
 
   ipcMain.on('window-close', event => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (win) {
-      win.hide()
+    try {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (win && !win.isDestroyed()) {
+        win.hide()
+      }
+    } catch (error) {
+      console.error('Failed to close window:', error)
     }
   })
 
-  app.on('activate', function () {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      searchWindowManager.createSearchWindow()
+  // 配置相关的 IPC 处理
+  ipcMain.handle('get-config', () => {
+    try {
+      return configManager.getConfig()
+    } catch (error) {
+      console.error('Failed to get config:', error)
+      return null
     }
   })
 
-  // 监听内存使用
+  ipcMain.handle('update-config', async (_, newConfig) => {
+    try {
+      await configManager.updateConfig(newConfig)
+      return true
+    } catch (error) {
+      console.error('Failed to update config:', error)
+      return false
+    }
+  })
+
+  // 开发环境下的内存监控
   if (process.env.NODE_ENV === 'development') {
     setInterval(() => {
       const usage = process.memoryUsage()
@@ -60,35 +94,27 @@ app.whenReady().then(() => {
       })
     }, 30000)
   }
-
-  // 设置 IPC 处理
-  ipcMain.handle('get-config', () => {
-    return configManager.getConfig()
-  })
-
-  ipcMain.handle('update-config', (_, newConfig) => {
-    configManager.updateConfig(newConfig)
-  })
-
-  setupMemoryManagement()
 })
 
+// 窗口管理
 app.on('window-all-closed', () => {
-  clipboardManager.stop()
-  globalShortcut.unregisterAll()
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
 
-app.on('before-quit', () => {
-  BrowserWindow.getAllWindows().forEach(window => {
-    window.destroy()
-  })
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    searchWindowManager.createSearchWindow()
+  }
+})
 
-  searchWindowManager.destroy()
+// 统一的退出处理
+app.on('before-quit', cleanup)
 
-  clipboardManager.stop()
-
-  globalShortcut.unregisterAll()
+// 处理未捕获的异常
+process.on('uncaughtException', error => {
+  console.error('Uncaught exception:', error)
+  cleanup()
+  app.quit()
 })
